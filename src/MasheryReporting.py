@@ -16,13 +16,32 @@ from json import JSONEncoder
 
 class mashery(object):
     
-    def __init__(self, proxy_server):
+    def __init__(self, proxy_server, query_url, api_key, shared_secret, throttle, max_items_per_page):
+        '''
+        Constructor method
+        
+        Takes:-
+            proxy server details,
+            Mashery URL for query API calls,
+            API key,
+            shared secret,
+            maximum allowable calls per second (throttle),
+            maximum allowable items per page
+        '''
+        
         self.proxy_server = proxy_server
+        self.query_url = query_url
+        self.api_key = api_key
+        self.shared_secret = shared_secret
+        self.throttle = throttle
+        self.max_items_per_page = max_items_per_page
         self.call_counter = -1
         
         
-    def check_throttle(self):
-        '''Internal method to slow API call rate to within allowable throttle (calls per second)'''
+    def _check_throttle(self):
+        '''
+        Private method to slow API call rate to within allowable throttle (calls per second)
+        '''
         
         # if it's the first call, then set up the initial throttle timer
         if self.call_counter == -1:
@@ -41,7 +60,7 @@ class mashery(object):
             self.timer = datetime.datetime.utcnow()
         else:
             # if the throttle has been exceeded then pause for a second
-            if self.call_counter > Config.THROTTLE:
+            if self.call_counter > self.throttle:
                 log("Call rate (" +
                     str(self.call_counter) +
                     " calls in " +
@@ -51,11 +70,9 @@ class mashery(object):
                 self.call_counter = 0
         
 
-
     def call(self, url, json_request, headers):
-        self.check_throttle()
+        self._check_throttle()
         
-        # TODO check config when proxy not required
         if self.proxy_server is not None:
             proxy = urllib.request.ProxyHandler({"http": self.proxy_server})
             auth = urllib.request.HTTPBasicAuthHandler()
@@ -75,10 +92,79 @@ class mashery(object):
             stop("%s" % e, -1)
 
 
-def process_options():
-    '''Processes command line options
+    def query(self, query):
+        '''
+        Run something against Mashery's query API
     
-    Returns proxy_server, from_date, to_date, mode, apikey'''
+        Takes query string 
+        Returns a list of Mashery items
+        '''
+        return self._exec_query(query, 1, self.max_items_per_page)
+
+    
+    def _exec_query(self, query, page_number, items_per_page):
+        '''
+        Private method to run something against Mashery's query API
+    
+        Takes query string,starting page number, items per page 
+        Returns a list of Mashery items
+        '''
+    
+        mashery_url = self.query_url + "?apikey=" + self.api_key + "&sig=" + self.get_sig()
+    
+        log("Calling " + mashery_url)
+        log("Query " + query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page))
+    
+        json_payload = JSONEncoder().encode({
+                        "method": "object.query",
+                        "params": [query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page)],
+                        "id":     "1",
+                        })
+    
+        headers = {
+               "Content-Type":   "application/json",
+               "Accept":         "text/plain",
+                "Content-Length": repr(len(json_payload))
+                }
+    
+        json_response = self.call(mashery_url, json_payload, headers)
+    
+        # check for errors
+        if json_response['error'] is not None:
+            print(json.dumps(json_response, sort_keys=True, indent=4))
+            stop("Error calling Mashery", -1)
+
+        # if the result set covers more than one page
+        # then call the API repeatedly until all pages have been returned
+        if json_response['result']['current_page'] < json_response['result']['total_pages']:
+            json_response['result']['items'].extend(
+                 self._exec_query(
+                            query,
+                            page_number+1,
+                            items_per_page
+                            ))
+
+        return json_response['result']['items']
+
+
+    def get_sig(self):
+        '''
+        Calculates the sig required to call the Mashery API
+        '''
+        unhashed_sig = self.api_key + self.shared_secret + str(calendar.timegm(time.gmtime()))
+    
+        # calculate the MD5 hash, returning it in hex
+        hashed_sig = hashlib.md5()
+        hashed_sig.update(unhashed_sig.encode('utf-8'))
+        return hashed_sig.hexdigest()
+    
+            
+def process_options():
+    '''
+    Processes command line options
+    
+    Returns proxy_server, from_date, to_date, mode, apikey
+    '''
     
     opts = argparse.ArgumentParser(description="Mashery reporting script")
 
@@ -138,7 +224,8 @@ def process_options():
 
 
 def log(log_message):
-    '''Prints a timestamped log message
+    '''
+    Prints a timestamped log message
     '''
     
     time_stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
@@ -146,7 +233,8 @@ def log(log_message):
 
 
 def stop(log_message, exit_code):
-    '''Stops the script, logging an output message and setting a return code
+    '''
+    Stops the script, logging an output message and setting a return code
     '''
     
     log(log_message)
@@ -155,74 +243,23 @@ def stop(log_message, exit_code):
 
     
 def obfuscate_key(api_key):
-    '''Takes an API key and removes all but the last six characters'''
+    '''
+    Takes an API key and removes all but the last six characters
+    '''
     return api_key[-6:]
     
             
-def get_sig():
-    '''Calculates the sig required to call the Mashery API'''
-    unhashed_sig = Config.APIKEY + Config.SECRET + str(calendar.timegm(time.gmtime()))
+def get_app(mashery_caller, api_key):
+    '''
+    Get details of the application(s) relating to a given key
     
-    # calculate the MD5 hash, returning it in hex
-    hashed_sig = hashlib.md5()
-    hashed_sig.update(unhashed_sig.encode('utf-8'))
-    return hashed_sig.hexdigest()
-    
-            
-def query_mashery(mashery_caller, query, page_number, items_per_page):
-    '''run something against Mashery's query API
-    
-    Takes proxy_server, query
-    Returns a list of Mashery items'''
-    
-    mashery_url = Config.MASHERY_URL_QUERY + "?apikey=" + Config.APIKEY + "&sig=" + get_sig()
-    
-    log("Calling " + mashery_url)
-    log("Query " + query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page))
-    
-    json_payload = JSONEncoder().encode({
-                        "method": "object.query",
-                        "params": [query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page)],
-                        "id":     "1",
-                        })
-    
-    headers = {
-               "Content-Type":   "application/json",
-               "Accept":         "text/plain",
-               "Content-Length": repr(len(json_payload))
-               }
-    
-    json_response = mashery_caller.call(mashery_url, json_payload, headers)
-    
-    # check for errors
-    if json_response['error'] is not None:
-        print(json.dumps(json_response, sort_keys=True, indent=4))
-        stop("Error calling Mashery", -1)
-
-    
-    # see if the resultset covers more than one page
-    # if so, call the API repeatedly until all pages have been returned
-    if json_response['result']['current_page'] < json_response['result']['total_pages']:
-        json_response['result']['items'].extend(
-                query_mashery(
-                              mashery_caller,
-                              query,
-                              page_number+1,
-                              items_per_page
-                              ))
-
-    return json_response['result']['items']
-
-
-def get_app(proxy_server, api_key):
-    '''get details of the application(s) relating to a given key
-    
-    Takes proxy_server, api_key
-    Returns a list of application names'''
+    Takes mashery_caller, api_key
+    Returns a list of application names
+    '''
     
     query = "SELECT application.name, username FROM keys WHERE apikey = '" + api_key + "'"
 
-    item_list = query_mashery(proxy_server, query, 1, Config.ITEMS_PER_PAGE)
+    item_list = mashery_caller.query(query)
 
     # some users have the same key across multiple services
     # the following "previous" variable will be used as comparison
@@ -254,15 +291,17 @@ def get_app(proxy_server, api_key):
         previous = current
 
 
-def list_keys(proxy_server):
-    '''list all active Mashery keys and associated apps
+def list_keys(mashery_caller):
+    '''
+    List all active Mashery keys and associated apps
     
-    Takes proxy_server
-    Returns a list of keys, application names and usernames'''
+    Takes mashery_caller
+    Returns a list of keys, application names and usernames
+    '''
     
     query = "SELECT apikey, application.name, username FROM keys"
 
-    item_list = query_mashery(proxy_server, query, 1, Config.ITEMS_PER_PAGE)
+    item_list = mashery_caller.query(query)
     
     # some users have the same key across multiple services
     # the following "previous" variable will be used as comparison
@@ -304,7 +343,13 @@ def main():
     
     log("Started in " + mode + " mode")
     
-    mashery_caller = mashery(proxy_server) 
+    mashery_caller = mashery(
+                             proxy_server,
+                             Config.MASHERY_URL_QUERY,
+                             Config.APIKEY,
+                             Config.SECRET,
+                             Config.THROTTLE,
+                             Config.ITEMS_PER_PAGE) 
     
     if mode == "getapp":
         if api_key is None:
