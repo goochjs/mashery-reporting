@@ -14,9 +14,43 @@ import json
 from json import JSONEncoder
 
 
+class script_logger(object):
+    def __init__(self, log_flag):
+        '''
+        Script control class for logging messages (if required) and stopping execution
+        '''
+        
+        self.log_flag = log_flag
+
+
+    def log(self, log_message):
+        '''
+        Prints a timestamped log message
+        '''
+    
+        if self.log_flag:
+            time_stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            print (time_stamp + " " + log_message)
+
+
+    def stop(self, log_message, exit_code, override_flag):
+        '''
+        Stops the script, logging an output message and setting a return code
+        
+        The override flag parameter will force a log message, even if the script has been called in non-logging mode
+        '''
+    
+        if override_flag:
+            self.log_flag = True
+
+        self.log(log_message)
+        self.log("Exiting with return code " + str(exit_code))
+        sys.exit(exit_code)
+
+    
 class mashery(object):
     
-    def __init__(self, proxy_server, mashery_url, api_key, shared_secret, throttle, max_items_per_page):
+    def __init__(self, proxy_server, mashery_url, api_key, shared_secret, throttle, max_items_per_page, logger):
         '''
         Constructor method
         
@@ -36,6 +70,7 @@ class mashery(object):
         self.throttle = throttle
         self.max_items_per_page = max_items_per_page
         self.call_counter = -1
+        self.logger = logger
         
         
     def _check_throttle(self):
@@ -61,7 +96,7 @@ class mashery(object):
         else:
             # if the throttle has been exceeded then pause for a second
             if self.call_counter > self.throttle:
-                log("Call rate (" +
+                self.logger.log("Call rate (" +
                     str(self.call_counter) +
                     " calls in " +
                     str(time_diff.total_seconds()) +
@@ -93,8 +128,8 @@ class mashery(object):
             connection = urllib.request.urlopen(req)
             return(json.loads(connection.read().decode('utf8')))
         except URLError as e:
-            log("Error accessing " + url)
-            stop("%s" % e, -1)
+            self.logger.log("Error accessing " + url)
+            self.logger.stop("%s" % e, -1, True)
 
 
     def query(self, query):
@@ -117,8 +152,8 @@ class mashery(object):
     
         mashery_url = self.mashery_url + "?apikey=" + self.api_key + "&sig=" + self.get_sig()
     
-        log("Calling " + mashery_url)
-        log("Query " + query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page))
+        self.logger.log("Calling " + mashery_url)
+        self.logger.log("Query " + query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page))
     
         json_payload = JSONEncoder().encode({
                         "method": "object.query",
@@ -137,7 +172,7 @@ class mashery(object):
         # check for errors
         if json_response['error'] is not None:
             print(json.dumps(json_response, sort_keys=True, indent=4))
-            stop("Error calling Mashery", -1)
+            self.logger.stop("Error calling Mashery", -1, True)
 
         # if the result set covers more than one page
         # then call the API repeatedly until all pages have been returned
@@ -166,7 +201,7 @@ class mashery(object):
             
 class apps_for_key(object):
     
-    def __init__(self, mashery_caller, api_key):
+    def __init__(self, mashery_caller, api_key, logger):
         '''
         Constructor method
         
@@ -175,6 +210,7 @@ class apps_for_key(object):
         Takes mashery_caller, api_key
         '''
     
+        self.logger = logger
         self.app = []
         query = "SELECT application.name, username FROM keys WHERE apikey LIKE '" + api_key + "'"
 
@@ -207,20 +243,21 @@ class apps_for_key(object):
                          "name":     app_name,
                          "username": username})
                 # spit it out
-                log("Username = " + username + ", Application = " + app_name)
+                self.logger.log("Username = " + username + ", Application = " + app_name)
         
             previous = current
 
 
     def print(self):
+        print("USERNAME,APP_NAME")
         for app in self.app:
-            log("Username = " + app["username"] + ", Application = " + app["name"])
+            print(app["username"] + "," + app["name"])
 
 
 
 class usage(object):
     
-    def __init__(self, mashery_caller, from_date, to_date):
+    def __init__(self, mashery_caller, from_date, to_date, logger):
         '''
         get statistics around call volumes between two dates
     
@@ -228,12 +265,13 @@ class usage(object):
         Returns an object with usage statistics for the given dates
         '''
 
+        self.logger = logger
         usage_report = []
     
         mashery_url = mashery_caller.mashery_url + "?apikey=" + mashery_caller.api_key + "&sig=" + mashery_caller.get_sig() \
             + "&format=" + Config.FORMAT + "&start_date=" + from_date + "&end_date=" + to_date
     
-        log("Calling " + mashery_url)
+        self.logger.log("Calling " + mashery_url)
 
         item_list = mashery_caller.call(mashery_url, None, None)
     
@@ -243,7 +281,8 @@ class usage(object):
                              Config.APIKEY,
                              Config.SECRET,
                              Config.THROTTLE,
-                             Config.ITEMS_PER_PAGE) 
+                             Config.ITEMS_PER_PAGE,
+                             logger) 
 
         for item in item_list:
             api_key = obfuscate_key(item["serviceDevKey"])
@@ -252,7 +291,7 @@ class usage(object):
                 username = Config.UNKNOWN
                 app_name = Config.UNKNOWN
             else:
-                apps = apps_for_key(mashery_app_caller, item["serviceDevKey"])
+                apps = apps_for_key(mashery_app_caller, item["serviceDevKey"], logger)
             
                 # currently assumes that the first app returned is the right one
                 # TODO think this through and perhaps check if multiple apps are
@@ -326,6 +365,11 @@ def process_options():
     opts.add_argument("--key", "-k",
                       required=False,
                       help="API key to query for ""getapp"" mode. Can include wildcards (%% to match any string, _ to match any single character).")
+    opts.add_argument("--log", "-l",
+                      required=False,
+                      default=False,
+                      action="store_true",
+                      help="Send log messages to sysout")
     options = opts.parse_args()
 
     # set up the proxy server, if specified
@@ -356,28 +400,9 @@ def process_options():
     else:
         to_date = today.strftime("%Y-%m-%d") + "T00:00:00Z"
         
-    return(proxy_server, from_date, to_date, options.mode, options.key)
+    return(proxy_server, from_date, to_date, options.mode, options.key, options.log)
 
 
-def log(log_message):
-    '''
-    Prints a timestamped log message
-    '''
-    
-    time_stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-    print (time_stamp + " " + log_message)
-
-
-def stop(log_message, exit_code):
-    '''
-    Stops the script, logging an output message and setting a return code
-    '''
-    
-    log(log_message)
-    log("Exiting with return code " + str(exit_code))
-    sys.exit(exit_code)
-
-    
 def obfuscate_key(api_key):
     '''
     Takes an API key and removes all but the last six characters
@@ -385,7 +410,7 @@ def obfuscate_key(api_key):
     return api_key[-6:]
     
 
-def list_keys(mashery_caller):
+def list_keys(mashery_caller, logger):
     '''
     List all active Mashery keys and associated apps
     
@@ -401,7 +426,7 @@ def list_keys(mashery_caller):
     # the following "previous" variable will be used as comparison
     previous = ""
     
-    log("List of all keys follows: (USERNAME,KEY_EXTRACT,APPLICATION)")
+    logger.log("List of all keys follows: (USERNAME,KEY_EXTRACT,APPLICATION)")
     print("USERNAME,APIKEY_EXTRACT,APPLICATION")
         
     for consumer in item_list:
@@ -436,13 +461,14 @@ def list_keys(mashery_caller):
 
 
 def main():
-    (proxy_server, from_date, to_date, mode, api_key) = process_options()
+    (proxy_server, from_date, to_date, mode, api_key, log_flag) = process_options()
     
-    log("Started in " + mode + " mode")
+    logger = script_logger(log_flag)
+    logger.log("Started in " + mode + " mode")
     
     if mode == "getapp":
         if api_key is None:
-            stop("Must specify API key parameter for getapp mode", -1)
+            logger.stop("Must specify API key parameter for getapp mode", -1, True)
             
         mashery_caller = mashery(
                              proxy_server,
@@ -450,9 +476,10 @@ def main():
                              Config.APIKEY,
                              Config.SECRET,
                              Config.THROTTLE,
-                             Config.ITEMS_PER_PAGE) 
+                             Config.ITEMS_PER_PAGE,
+                             logger) 
 
-        apps = apps_for_key(mashery_caller, api_key)
+        apps = apps_for_key(mashery_caller, api_key, logger)
         apps.print()            
 
     elif mode == "listkeys":
@@ -462,9 +489,10 @@ def main():
                              Config.APIKEY,
                              Config.SECRET,
                              Config.THROTTLE,
-                             Config.ITEMS_PER_PAGE) 
+                             Config.ITEMS_PER_PAGE,
+                             logger) 
         
-        list_keys(mashery_caller)
+        list_keys(mashery_caller, logger)
                 
     elif mode == "usage":
         mashery_caller = mashery(
@@ -473,12 +501,13 @@ def main():
                              Config.APIKEY,
                              Config.SECRET,
                              Config.THROTTLE,
-                             Config.ITEMS_PER_PAGE) 
+                             Config.ITEMS_PER_PAGE,
+                             logger) 
         
-        usage_stats = usage(mashery_caller, from_date, to_date)
+        usage_stats = usage(mashery_caller, from_date, to_date, logger)
         usage_stats.print()
 
-    stop("Finished", 0)
+    logger.stop("Finished", 0, False)
 
 
 if __name__ == "__main__":
