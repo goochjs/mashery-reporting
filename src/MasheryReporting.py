@@ -16,7 +16,7 @@ from json import JSONEncoder
 
 class mashery(object):
     
-    def __init__(self, proxy_server, query_url, api_key, shared_secret, throttle, max_items_per_page):
+    def __init__(self, proxy_server, mashery_url, api_key, shared_secret, throttle, max_items_per_page):
         '''
         Constructor method
         
@@ -30,7 +30,7 @@ class mashery(object):
         '''
         
         self.proxy_server = proxy_server
-        self.query_url = query_url
+        self.mashery_url = mashery_url
         self.api_key = api_key
         self.shared_secret = shared_secret
         self.throttle = throttle
@@ -79,11 +79,16 @@ class mashery(object):
             opener = urllib.request.build_opener(proxy, auth, urllib.request.HTTPHandler)
             urllib.request.install_opener(opener)
 
-        req = urllib.request.Request(
+        # add the header and payload body into the call if provided
+        if json_request is None and headers is None:
+            req = urllib.request.Request(url)
+        else:
+            req = urllib.request.Request(
                                  url,
                                  data=json_request.encode('utf-8'),
                                  headers=headers
                                  )
+
         try:        
             connection = urllib.request.urlopen(req)
             return(json.loads(connection.read().decode('utf8')))
@@ -110,7 +115,7 @@ class mashery(object):
         Returns a list of Mashery items
         '''
     
-        mashery_url = self.query_url + "?apikey=" + self.api_key + "&sig=" + self.get_sig()
+        mashery_url = self.mashery_url + "?apikey=" + self.api_key + "&sig=" + self.get_sig()
     
         log("Calling " + mashery_url)
         log("Query " + query + " PAGE " + str(page_number) + " ITEMS " + str(items_per_page))
@@ -159,6 +164,137 @@ class mashery(object):
         return hashed_sig.hexdigest()
     
             
+class apps_for_key(object):
+    
+    def __init__(self, mashery_caller, api_key):
+        '''
+        Constructor method
+        
+        Builds an object of application names and owners relating to a given key value
+    
+        Takes mashery_caller, api_key
+        '''
+    
+        self.app = []
+        query = "SELECT application.name, username FROM keys WHERE apikey LIKE '" + api_key + "'"
+
+        item_list = mashery_caller.query(query)
+
+        # some users have the same key across multiple services
+        # the following "previous" variable will be used as comparison
+        previous = ""
+        
+        for consumer in item_list:
+            # get the username
+            if consumer['username'] is None:
+                username = "UNKNOWN"
+            else:
+                username = consumer['username']
+
+            # get the application name
+            if consumer['application'] is None:
+                app_name = Config.UNKNOWN
+            else:
+                if consumer['application']['name'] is None:
+                    app_name = Config.UNKNOWN
+                else:
+                    app_name = consumer['application']['name']
+
+            current = username + "," + app_name
+        
+            if current != previous:
+                self.app.append({
+                         "name":     app_name,
+                         "username": username})
+                # spit it out
+                log("Username = " + username + ", Application = " + app_name)
+        
+            previous = current
+
+
+    def print(self):
+        for app in self.app:
+            log("Username = " + app["username"] + ", Application = " + app["name"])
+
+
+
+class usage(object):
+    
+    def __init__(self, mashery_caller, from_date, to_date):
+        '''
+        get statistics around call volumes between two dates
+    
+        Takes mashery_caller and from/to dates
+        Returns an object with usage statistics for the given dates
+        '''
+
+        usage_report = []
+    
+        mashery_url = mashery_caller.mashery_url + "?apikey=" + mashery_caller.api_key + "&sig=" + mashery_caller.get_sig() \
+            + "&format=" + Config.FORMAT + "&start_date=" + from_date + "&end_date=" + to_date
+    
+        log("Calling " + mashery_url)
+
+        item_list = mashery_caller.call(mashery_url, None, None)
+    
+        mashery_app_caller = mashery(
+                             mashery_caller.proxy_server,
+                             Config.MASHERY_URL_QUERY,
+                             Config.APIKEY,
+                             Config.SECRET,
+                             Config.THROTTLE,
+                             Config.ITEMS_PER_PAGE) 
+
+        for item in item_list:
+            api_key = obfuscate_key(item["serviceDevKey"])
+        
+            if (item["serviceDevKey"] == Config.UNKNOWN):
+                username = Config.UNKNOWN
+                app_name = Config.UNKNOWN
+            else:
+                apps = apps_for_key(mashery_app_caller, item["serviceDevKey"])
+            
+                # currently assumes that the first app returned is the right one
+                # TODO think this through and perhaps check if multiple apps are
+                # returned for the same key and send a warning
+                username = apps.app[0]["username"]
+                app_name = apps.app[0]["name"]
+        
+            successful_calls = item["callStatusSuccessful"]
+            unsuccessful_calls = item["callStatusOther"]
+            blocked_calls = item["callStatusBlocked"]
+    
+            usage_report.append({
+                        "api_key" :           api_key,
+                        "username":           username,
+                        "app_name":           app_name,
+                        "successful_calls":   successful_calls,
+                        "unsuccessful_calls": unsuccessful_calls,
+                        "blocked_calls":      blocked_calls
+                            })
+        
+        self.usage_report = usage_report
+
+
+    def print(self):
+        '''
+        Print a comma separated version of the usage report
+        '''
+        
+        # print column headers
+        print("USERNAME,APPLICATION,APIKEY_EXTRACT,SUCCESSFUL_CALLS,UNSUCCESSFUL_CALLS,BLOCKED_CALLS")
+        
+        for usage in self.usage_report:
+            print(
+                  usage["username"] + "," +
+                  usage["app_name"] + "," +
+                  obfuscate_key(usage["api_key"]) + "," +
+                  str(usage["successful_calls"]) + "," +
+                  str(usage["unsuccessful_calls"]) + "," +
+                  str(usage["blocked_calls"])
+                  )
+
+    
 def process_options():
     '''
     Processes command line options
@@ -189,7 +325,7 @@ def process_options():
                       help="yyyy-mm-ddThh:mm:ssZ - defaults to midnight the day before")
     opts.add_argument("--key", "-k",
                       required=False,
-                      help="API key to query for ""getapp"" mode")
+                      help="API key to query for ""getapp"" mode. Can include wildcards (%% to match any string, _ to match any single character).")
     options = opts.parse_args()
 
     # set up the proxy server, if specified
@@ -248,48 +384,6 @@ def obfuscate_key(api_key):
     '''
     return api_key[-6:]
     
-            
-def get_app(mashery_caller, api_key):
-    '''
-    Get details of the application(s) relating to a given key
-    
-    Takes mashery_caller, api_key
-    Returns a list of application names
-    '''
-    
-    query = "SELECT application.name, username FROM keys WHERE apikey = '" + api_key + "'"
-
-    item_list = mashery_caller.query(query)
-
-    # some users have the same key across multiple services
-    # the following "previous" variable will be used as comparison
-    previous = ""
-        
-    for consumer in item_list:
-        # get the username
-        if consumer['username'] is None:
-            username = "UNKNOWN"
-        else:
-            username = consumer['username']
-
-        # get the application name
-        if consumer['application'] is None:
-            app_name = "UNNAMED"
-        else:
-            if consumer['application']['name'] is None:
-                app_name = "UNNAMED"
-            else:
-                app_name = consumer['application']['name']
-
-        current = username + "," + app_name
-        
-        if current != previous:
-            # spit it out
-            log("Username    = " + username)
-            log("Application = " + app_name)
-        
-        previous = current
-
 
 def list_keys(mashery_caller):
     '''
@@ -306,6 +400,9 @@ def list_keys(mashery_caller):
     # some users have the same key across multiple services
     # the following "previous" variable will be used as comparison
     previous = ""
+    
+    log("List of all keys follows: (USERNAME,KEY_EXTRACT,APPLICATION)")
+    print("USERNAME,APIKEY_EXTRACT,APPLICATION")
         
     for consumer in item_list:
         # get the username
@@ -343,26 +440,43 @@ def main():
     
     log("Started in " + mode + " mode")
     
-    mashery_caller = mashery(
+    if mode == "getapp":
+        if api_key is None:
+            stop("Must specify API key parameter for getapp mode", -1)
+            
+        mashery_caller = mashery(
                              proxy_server,
                              Config.MASHERY_URL_QUERY,
                              Config.APIKEY,
                              Config.SECRET,
                              Config.THROTTLE,
                              Config.ITEMS_PER_PAGE) 
-    
-    if mode == "getapp":
-        if api_key is None:
-            stop("Must specify API key parameter for getapp mode", -1)
-            
-        get_app(mashery_caller, api_key)
-        
+
+        apps = apps_for_key(mashery_caller, api_key)
+        apps.print()            
+
     elif mode == "listkeys":
+        mashery_caller = mashery(
+                             proxy_server,
+                             Config.MASHERY_URL_QUERY,
+                             Config.APIKEY,
+                             Config.SECRET,
+                             Config.THROTTLE,
+                             Config.ITEMS_PER_PAGE) 
+        
         list_keys(mashery_caller)
                 
     elif mode == "usage":
-        print ("TODO: USAGE REPORT STUFF")
+        mashery_caller = mashery(
+                             proxy_server,
+                             Config.MASHERY_URL_CALLS + Config.SERVICEID,
+                             Config.APIKEY,
+                             Config.SECRET,
+                             Config.THROTTLE,
+                             Config.ITEMS_PER_PAGE) 
         
+        usage_stats = usage(mashery_caller, from_date, to_date)
+        usage_stats.print()
 
     stop("Finished", 0)
 
