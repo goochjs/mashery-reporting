@@ -31,9 +31,9 @@ Depending on the mode you want to run, the Mashery user ID associated with the A
 Running from inside a corporate network
 ---------------------------------------
 
-If running from behind a corporate proxy firewall, you can set your proxy server via the `--proxy` parameter.  Or, if you want to configure once for your site to make sharing configuration between users easier, you can set the proxy IP and port within the Config script file and then set `--proxy=default` on the command line.  Note that the parameters `--id` and `--password` are for your credentials to get through the proxy server.
+If running from behind a corporate proxy firewall, you can set your proxy server via the `--proxy` parameter.  Or, if you want to configure once for your site to make sharing configuration between users easier, you can set the proxy IP and port within the Config script file and then set `--proxy=default` on the command line.  Note that the parameters `--id` and `--password` are for your credentials to get through the proxy server, if necessary.
 
-If you're not running from inside a corporate proxy, you can ignore all of the above paragraph.
+And if you're not running from behind a corporate proxy, you can ignore the above paragraph.
 
 Mode - getapp
 -------------
