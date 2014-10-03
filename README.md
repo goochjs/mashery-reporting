@@ -48,7 +48,7 @@ In this mode, the script will retrieve a list of all keys and their associated u
 Mode - usage
 ------------
 
-In this mode, the script will return some usage statistics for the given key (`--key`) across the given date range (from `--from_date` to `--to-date`).  If the date parameters are not set, the script will return details for yesterday.
+In this mode, the script will return some usage statistics for a particular service (as set in the Config file) across the given date range (from `--from_date` to `--to-date`).  If the date parameters are not set, the script will return details for yesterday.
 
 The dates should take the format - `YYYY-MM-DDThh:mm:ssZ`.
 
